@@ -1,0 +1,392 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>BETOx1 DASH</title>
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;background:#080808;color:white;
+ font-family:Arial,sans-serif;overflow:hidden;
+ touch-action:manipulation;
+}
+#app{height:100dvh;display:flex;flex-direction:column}
+header{text-align:center;padding:15px;color:#ff2525;
+ font-size:25px;font-weight:900;letter-spacing:3px;
+ text-shadow:0 0 15px red}
+#stats{display:flex;justify-content:space-around;
+ padding:8px;color:#ff7777;font-size:13px}
+#game{width:100%;flex:1;display:block;
+ background:linear-gradient(#100707,#080808);
+ touch-action:none}
+#controls{padding:12px;text-align:center;background:#101010}
+button,.upload{
+ background:#b90019;color:white;border:1px solid #ff3333;
+ border-radius:9px;padding:12px 18px;
+ font-weight:bold;margin:4px;font-size:14px;
+}
+button:active{background:#ff2525}
+input[type=file]{display:none}
+#musicName{font-size:12px;color:#ff9999;margin:8px}
+#help{font-size:11px;color:#888;margin:5px}
+#overlay{
+ position:fixed;inset:0;background:#000c;
+ display:flex;align-items:center;justify-content:center;
+ flex-direction:column;text-align:center;padding:25px;
+}
+#overlay h1{color:#ff2525;font-size:38px;
+ text-shadow:0 0 25px red}
+#overlay p{color:#ddd;line-height:1.6}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="app">
+<header>BETOx1 DASH</header>
+<div id="stats">
+ <span>SCORE: <b id="score">0</b></span>
+ <span>BEST: <b id="best">0</b></span>
+ <span>BEAT: <b id="beat">READY</b></span>
+</div>
+
+<canvas id="game"></canvas>
+
+<div id="controls">
+ <label class="upload" for="music">🎵 PILIH LAGU</label>
+ <input id="music" type="file" accept="audio/*">
+ <button id="playMusic">▶ MUSIK</button>
+ <button id="start">START GAME</button>
+ <button id="restart">RESTART</button>
+ <div id="musicName">Belum ada lagu dipilih</div>
+ <div id="help">TAP layar untuk melompat • Hindari duri!</div>
+</div>
+</div>
+
+<div id="overlay">
+ <h1>BETOX1 DASH</h1>
+ <p>NEON RED EDITION<br>
+ Pilih lagu sendiri dan rasakan tantangan Beat Sync!</p>
+ <button id="begin">MULAI</button>
+</div>
+
+<audio id="audio" loop></audio>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const audio=document.getElementById("audio");
+
+const scoreText=document.getElementById("score");
+const bestText=document.getElementById("best");
+const beatText=document.getElementById("beat");
+const musicName=document.getElementById("musicName");
+
+let W,H,ground;
+let running=false,dead=false;
+let score=0,speed=5;
+let obstacles=[];
+let particles=[];
+let frame=0;
+let lastBeat=0;
+let energyAverage=0;
+let beatPulse=0;
+let audioContext,analyser,source;
+let audioData;
+let audioReady=false;
+let jumpPressed=false;
+
+let best=Number(localStorage.getItem("betox1best")||0);
+bestText.textContent=best;
+
+function resize(){
+ const rect=canvas.getBoundingClientRect();
+ const dpr=Math.min(devicePixelRatio||1,2);
+ W=rect.width;H=rect.height;
+ canvas.width=W*dpr;
+ canvas.height=H*dpr;
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ground=H-48;
+}
+window.addEventListener("resize",resize);
+resize();
+
+const player={
+ x:65,y:0,size:28,vy:0,
+ gravity:.72,jump:-13,
+ grounded:true
+};
+player.y=ground-player.size;
+
+function jump(){
+ if(!running||dead||!player.grounded)return;
+ player.vy=player.jump;
+ player.grounded=false;
+ burst(player.x+14,player.y+25);
+}
+
+function burst(x,y){
+ for(let i=0;i<8;i++){
+ particles.push({
+ x,y,vx:(Math.random()-.5)*5,
+ vy:(Math.random()-.5)*5,
+ life:25
+ });
+ }
+}
+
+function setupAudio(){
+ if(audioContext)return;
+ audioContext=new (window.AudioContext||window.webkitAudioContext)();
+ analyser=audioContext.createAnalyser();
+ analyser.fftSize=1024;
+ source=audioContext.createMediaElementSource(audio);
+ source.connect(analyser);
+ analyser.connect(audioContext.destination);
+ audioData=new Uint8Array(analyser.frequencyBinCount);
+ audioReady=true;
+}
+
+function detectBeat(){
+ if(!analyser||audio.paused)return false;
+
+ analyser.getByteFrequencyData(audioData);
+
+ let sum=0;
+ for(let i=2;i<100;i++)sum+=audioData[i];
+ let energy=sum/98;
+
+ energyAverage=energyAverage*.94+energy*.06;
+
+ let now=performance.now();
+ let detected=
+ energy>energyAverage*1.35 &&
+ energy>35 &&
+ now-lastBeat>260;
+
+ if(detected){
+  lastBeat=now;
+  beatPulse=1;
+  beatText.textContent="HIT!";
+  return true;
+ }
+ beatPulse*=.88;
+ if(beatPulse<.08)beatText.textContent="LISTENING";
+ return false;
+}
+
+function spawnObstacle(){
+ const height=30+Math.random()*12;
+ obstacles.push({
+  x:W+30,
+  y:ground-height,
+  w:25+Math.random()*8,
+  h:height,
+  passed:false
+ });
+}
+
+function update(){
+ if(!running||dead)return;
+
+ frame++;
+ score+=1;
+ speed=Math.min(9,5+score/2500);
+ scoreText.textContent=Math.floor(score/10);
+
+ // Music beat controls obstacle generation
+ if(detectBeat()){
+  spawnObstacle();
+  burst(W-20,ground-20);
+ }
+
+ player.vy+=player.gravity;
+ player.y+=player.vy;
+
+ if(player.y+player.size>=ground){
+  player.y=ground-player.size;
+  player.vy=0;
+  player.grounded=true;
+ }
+
+ for(let o of obstacles){
+  o.x-=speed;
+
+  if(
+   player.x+player.size-5>o.x+4 &&
+   player.x+5<o.x+o.w-4 &&
+   player.y+player.size-4>o.y+5
+  ){
+   gameOver();
+  }
+
+  if(!o.passed&&o.x+o.w<player.x){
+   o.passed=true;
+  }
+ }
+
+ obstacles=obstacles.filter(o=>o.x>-60);
+
+ particles.forEach(p=>{
+  p.x+=p.vx;p.y+=p.vy;p.life--;
+ });
+ particles=particles.filter(p=>p.life>0);
+}
+
+function draw(){
+ ctx.clearRect(0,0,W,H);
+
+ // Background grid
+ ctx.strokeStyle="#351010";
+ ctx.lineWidth=.5;
+ for(let x=0;x<W;x+=40){
+  ctx.beginPath();ctx.moveTo(x,0);
+  ctx.lineTo(x,H);ctx.stroke();
+ }
+ for(let y=0;y<H;y+=40){
+  ctx.beginPath();ctx.moveTo(0,y);
+  ctx.lineTo(W,y);ctx.stroke();
+ }
+
+ // Ground
+ ctx.shadowBlur=15;
+ ctx.shadowColor="#ff1010";
+ ctx.strokeStyle="#ff2525";
+ ctx.lineWidth=3;
+ ctx.beginPath();
+ ctx.moveTo(0,ground);
+ ctx.lineTo(W,ground);
+ ctx.stroke();
+ ctx.shadowBlur=0;
+
+ // Player
+ ctx.save();
+ ctx.shadowBlur=20;
+ ctx.shadowColor="#ff2020";
+ ctx.fillStyle="#ff2525";
+ ctx.fillRect(player.x,player.y,
+ player.size,player.size);
+ ctx.restore();
+
+ // Obstacles
+ for(let o of obstacles){
+  ctx.save();
+  ctx.shadowBlur=15;
+  ctx.shadowColor="red";
+  ctx.fillStyle="#ff2020";
+  ctx.beginPath();
+  ctx.moveTo(o.x,ground);
+  ctx.lineTo(o.x+o.w/2,ground-o.h);
+  ctx.lineTo(o.x+o.w,ground);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+ }
+
+ // Particles
+ for(let p of particles){
+  ctx.globalAlpha=p.life/25;
+  ctx.fillStyle="#ff3333";
+  ctx.fillRect(p.x,p.y,4,4);
+ }
+ ctx.globalAlpha=1;
+
+ // Beat indicator
+ if(beatPulse>.05){
+  ctx.strokeStyle="rgba(255,30,30,"+beatPulse+")";
+  ctx.lineWidth=4;
+  ctx.strokeRect(3,3,W-6,H-6);
+ }
+}
+
+function gameOver(){
+ if(dead)return;
+ dead=true;running=false;
+ audio.pause();
+
+ if(Math.floor(score/10)>best){
+  best=Math.floor(score/10);
+  localStorage.setItem("betox1best",best);
+  bestText.textContent=best;
+ }
+
+ document.querySelector("#overlay h1").textContent="GAME OVER";
+ document.querySelector("#overlay p").innerHTML=
+ "SCORE: "+Math.floor(score/10)+
+ "<br>Tekan RESTART untuk bermain lagi.";
+ document.getElementById("overlay").classList.remove("hidden");
+}
+
+function resetGame(){
+ score=0;frame=0;speed=5;
+ obstacles=[];particles=[];
+ player.y=ground-player.size;
+ player.vy=0;player.grounded=true;
+ dead=false;
+ scoreText.textContent="0";
+ document.getElementById("overlay").classList.add("hidden");
+ running=true;
+}
+
+function loop(){
+ update();
+ draw();
+ requestAnimationFrame(loop);
+}
+loop();
+
+document.getElementById("music").addEventListener("change",e=>{
+ const file=e.target.files[0];
+ if(!file)return;
+ audio.src=URL.createObjectURL(file);
+ musicName.textContent="🎵 "+file.name;
+});
+
+document.getElementById("playMusic").onclick=async()=>{
+ if(!audio.src){
+  alert("Pilih lagu terlebih dahulu!");
+  return;
+ }
+ setupAudio();
+ if(audioContext.state==="suspended")await audioContext.resume();
+ if(audio.paused)await audio.play();
+ else audio.pause();
+};
+
+document.getElementById("start").onclick=async()=>{
+ resetGame();
+ if(audio.src){
+  setupAudio();
+  if(audioContext.state==="suspended")await audioContext.resume();
+  await audio.play();
+ }
+};
+
+document.getElementById("restart").onclick=()=>{
+ resetGame();
+ if(audio.src){
+  setupAudio();
+  if(audioContext.state==="suspended")audioContext.resume();
+  audio.play().catch(()=>{});
+ }
+};
+
+document.getElementById("begin").onclick=()=>{
+ document.getElementById("overlay").classList.add("hidden");
+};
+
+canvas.addEventListener("pointerdown",e=>{
+ e.preventDefault();
+ jump();
+});
+
+document.addEventListener("keydown",e=>{
+ if(e.code==="Space"||e.code==="ArrowUp"){
+  e.preventDefault();jump();
+ }
+});
+</script>
+</body>
+  </html>
+  
